@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import streamlit as st
+import pandas as pd
 from PIL import Image
 
 try:
@@ -56,6 +57,9 @@ DEFAULT_INVENTORY_ITEM: Dict[str, Any] = {
     "sale_price": 0.0,
     "notes": "",
     "image_urls": "",
+    "offer_id": "",
+    "allegro_url": "",
+    "external_id": "",
 }
 
 
@@ -353,6 +357,125 @@ def update_inventory_status(item_id: str, status: str) -> None:
     save_inventory(items)
 
 
+def clean_csv_value(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    if text.lower() == "nan":
+        return ""
+    # fix GTIN that pandas sometimes reads as 3.340444e+12
+    if "e+" in text.lower():
+        try:
+            return str(int(float(text)))
+        except Exception:
+            return text
+    if text.endswith(".0") and text.replace(".0", "").isdigit():
+        return text.replace(".0", "")
+    return text.strip()
+
+
+def infer_brand_from_name(name: str) -> str:
+    if not name:
+        return ""
+    return name.split()[0].strip(" ,-").upper()
+
+
+def infer_size_from_name(name: str) -> str:
+    import re
+    patterns = [
+        r"\bEU\s*([0-9]{2,3}[A-Z]{0,2}|XS|S|M|L|XL|XXL|XXXL)\b",
+        r"\b(XXXS|XXS|XS|S|M|L|XL|XXL|XXXL)\b",
+        r"\b([0-9]{2,3}[A-Z]{1,2})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, name, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+    return ""
+
+
+def map_allegro_status(status: str) -> str:
+    status = (status or "").upper()
+    if status == "ACTIVE":
+        return "Wystawione"
+    if status in ["ENDED", "INACTIVE", "CLOSED"]:
+        return "Archiwum"
+    return "Do wystawienia"
+
+
+def import_allegro_csv(uploaded_file, overwrite_existing: bool = True) -> Dict[str, int]:
+    try:
+        df = pd.read_csv(uploaded_file, dtype=str)
+    except Exception:
+        uploaded_file.seek(0)
+        df = pd.read_csv(uploaded_file, sep=";", dtype=str)
+
+    inventory = load_inventory()
+    existing_by_id = {item.get("id"): item for item in inventory}
+
+    imported = 0
+    updated = 0
+    skipped = 0
+
+    for _, row in df.iterrows():
+        offer_id = clean_csv_value(row.get("offer_id", ""))
+        name = clean_csv_value(row.get("name", ""))
+        if not offer_id and not name:
+            skipped += 1
+            continue
+
+        item_id = f"ALG-{offer_id}" if offer_id else next_inventory_id(inventory)
+        if item_id in existing_by_id and not overwrite_existing:
+            skipped += 1
+            continue
+
+        stock_raw = clean_csv_value(row.get("stock", "1"))
+        price_raw = clean_csv_value(row.get("price@allegro-pl", "0"))
+        try:
+            quantity = int(float(stock_raw or 1))
+        except Exception:
+            quantity = 1
+        try:
+            sale_price = float((price_raw or "0").replace(",", "."))
+        except Exception:
+            sale_price = 0.0
+
+        payload = {
+            "id": item_id,
+            "created_at": existing_by_id.get(item_id, {}).get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "product_name": name,
+            "brand": infer_brand_from_name(name),
+            "category": "Bielizna / odzież",
+            "condition": "Nowy",
+            "size": infer_size_from_name(name),
+            "color": "",
+            "code": clean_csv_value(row.get("gtin", "")),
+            "quantity": quantity,
+            "location": existing_by_id.get(item_id, {}).get("location", ""),
+            "status": map_allegro_status(clean_csv_value(row.get("status", ""))),
+            "purchase_cost": float(existing_by_id.get(item_id, {}).get("purchase_cost", 0.0) or 0.0),
+            "sale_price": sale_price,
+            "notes": f"Import z Allegro. offer_id: {offer_id}. external_id: {clean_csv_value(row.get('external_id', ''))}.",
+            "image_urls": existing_by_id.get(item_id, {}).get("image_urls", ""),
+            "offer_id": offer_id,
+            "allegro_url": clean_csv_value(row.get("url", "")),
+            "external_id": clean_csv_value(row.get("external_id", "")),
+        }
+
+        if item_id in existing_by_id:
+            inventory = [payload if item.get("id") == item_id else item for item in inventory]
+            updated += 1
+        else:
+            inventory.append(payload)
+            imported += 1
+
+        existing_by_id[item_id] = payload
+
+    save_inventory(inventory)
+    return {"imported": imported, "updated": updated, "skipped": skipped}
+
+
 # -----------------------------
 # AI
 # -----------------------------
@@ -567,6 +690,39 @@ with tab_inventory:
 
     st.divider()
 
+    with st.expander("⬆️ Import asortymentu z pliku CSV Allegro", expanded=False):
+        st.write("Wgraj eksport z Allegro z kolumnami typu: offer_id, name, status, gtin, stock, price@allegro-pl, url.")
+        allegro_csv = st.file_uploader(
+            "Plik CSV z Allegro",
+            type=["csv"],
+            key="allegro_csv_import",
+        )
+        overwrite_existing = st.checkbox(
+            "Aktualizuj istniejące pozycje o tym samym offer_id",
+            value=True,
+            key="overwrite_allegro_import",
+        )
+
+        if allegro_csv is not None:
+            try:
+                preview_df = pd.read_csv(allegro_csv, dtype=str)
+            except Exception:
+                allegro_csv.seek(0)
+                preview_df = pd.read_csv(allegro_csv, sep=";", dtype=str)
+            allegro_csv.seek(0)
+
+            st.caption(f"Wykryto {len(preview_df)} wierszy i {len(preview_df.columns)} kolumn.")
+            st.dataframe(preview_df.head(10), use_container_width=True)
+
+            if st.button("📥 Importuj do magazynu", use_container_width=True):
+                result = import_allegro_csv(allegro_csv, overwrite_existing=overwrite_existing)
+                st.success(
+                    f"Import zakończony. Nowe: {result['imported']}, zaktualizowane: {result['updated']}, pominięte: {result['skipped']}."
+                )
+                st.rerun()
+
+    st.divider()
+
     with st.expander("➕ Dodaj / edytuj produkt w magazynie", expanded=True):
         form_col1, form_col2, form_col3 = st.columns(3)
 
@@ -641,7 +797,7 @@ with tab_inventory:
         q = search_query.lower().strip()
         filtered = [
             item for item in filtered
-            if q in " ".join(str(item.get(k, "")) for k in ["id", "product_name", "brand", "category", "size", "color", "code", "location", "status"]).lower()
+            if q in " ".join(str(item.get(k, "")) for k in ["id", "product_name", "brand", "category", "size", "color", "code", "location", "status", "offer_id", "allegro_url", "external_id"]).lower()
         ]
 
     if not filtered:
@@ -654,6 +810,8 @@ with tab_inventory:
                 with header_col1:
                     st.markdown(f"**{item.get('brand', '')} {item.get('product_name', '')}**")
                     st.caption(f"ID: {item.get('id')} | Kod: {item.get('code', '')} | Dodano: {item.get('created_at', '')}")
+                    if item.get("allegro_url"):
+                        st.markdown(f"[Otwórz ofertę Allegro]({item.get('allegro_url')})")
                 with header_col2:
                     st.write(f"**Status:** {item.get('status', '')}")
                     st.write(f"**Lokalizacja:** {item.get('location', '')}")
