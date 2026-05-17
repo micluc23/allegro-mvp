@@ -527,14 +527,21 @@ def import_allegro_csv(uploaded_file, overwrite_existing: bool = True) -> Dict[s
 # -----------------------------
 # AI / internet image search
 # -----------------------------
-def image_to_data_url(image: Image.Image, max_size: int = 1200) -> str:
-    """Prepare image for SerpApi Google Lens as base64 data URL."""
-    img = image.convert("RGB")
-    img.thumbnail((max_size, max_size))
+from PIL import Image
+from io import BytesIO
+import base64
+
+def image_to_base64(uploaded_file):
+    image = Image.open(uploaded_file)
+
+    # zmniejszenie zdjęcia
+    max_size = (800, 800)
+    image.thumbnail(max_size)
+
     buffer = BytesIO()
-    img.save(buffer, format="JPEG", quality=85)
-    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return f"data:image/jpeg;base64,{encoded}"
+    image.save(buffer, format="JPEG", quality=70)
+
+    return base64.b64encode(buffer.getvalue()).decode()
 
 
 def search_google_lens_serpapi(image: Image.Image, query: str = "", country: str = "pl", limit: int = 12) -> Dict[str, Any]:
