@@ -690,17 +690,16 @@ with st.sidebar:
     st.checkbox("Tryb testowy bez używania API", key="dry_run")
     st.info("W trybie testowym przyciski AI działają 'na sucho' i nie zużywają limitów API.")
 
-tab1, tab_inventory, tab_listed, tab_image_search, tab2, tab3 = st.tabs(
+tab1, tab_image_search, tab2, tab3, tab_inventory, tab_listed = st.tabs(
     [
         "1️⃣ Rozpoznawanie zdjęć",
-        "📦 Magazyn / Asortyment",
-        "🛒 Wystawione aukcje",
         "🤖 AI wyszukiwanie zdjęć",
         "2️⃣ Opis i wzór aukcji",
         "3️⃣ Zapisane szablony",
+        "📦 Magazyn / Asortyment",
+        "🛒 Wystawione aukcje",
     ]
 )
-
 
 # -----------------------------
 # TAB 1
