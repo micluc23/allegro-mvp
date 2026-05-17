@@ -648,6 +648,7 @@ def generate_description_openai() -> str:
     client = OpenAI(api_key=api_key)
     try:
         response = client.responses.create(model="gpt-4.1-mini", input=build_listing_prompt())
+        st.session_state.openai_requests = st.session_state.get("openai_requests", 0) + 1
         return response.output_text
     except Exception as exc:
         return f"Nie udało się połączyć z OpenAI API. Szczegóły: {exc}"
@@ -690,7 +691,7 @@ with st.sidebar:
     st.checkbox("Tryb testowy bez używania API", key="dry_run")
     st.info("W trybie testowym przyciski AI działają 'na sucho' i nie zużywają limitów API.")
 
-tab1, tab_image_search, tab2, tab3, tab_inventory, tab_listed = st.tabs(
+tab1, tab_image_search, tab2, tab3, tab_inventory, tab_listed, tab_costs = st.tabs(
     [
         "1️⃣ Rozpoznawanie zdjęć",
         "🤖 AI wyszukiwanie zdjęć",
@@ -698,9 +699,9 @@ tab1, tab_image_search, tab2, tab3, tab_inventory, tab_listed = st.tabs(
         "3️⃣ Zapisane szablony",
         "📦 Magazyn / Asortyment",
         "🛒 Wystawione aukcje",
+        "💰 Zużycie AI / Koszty",
     ]
 )
-
 # -----------------------------
 # TAB 1
 # -----------------------------
@@ -1355,3 +1356,54 @@ with tab3:
                 file_name=f"{selected_name}.json",
                 mime="application/json",
             )
+# -----------------------------
+# TAB COSTS
+# -----------------------------
+with tab_costs:
+    st.subheader("💰 Zużycie AI / Koszty")
+
+    st.info(
+        "To jest MVP licznika użycia AI. "
+        "Na razie wartości są orientacyjne i będą rozwijane."
+    )
+
+    # przykładowe dane
+    openai_requests = st.session_state.get("openai_requests", 0)
+    gemini_requests = st.session_state.get("gemini_requests", 0)
+    serpapi_requests = st.session_state.get("serpapi_requests", 0)
+
+    openai_cost = openai_requests * 0.02
+    gemini_cost = gemini_requests * 0.005
+    serpapi_cost = serpapi_requests * 0.03
+
+    total_cost = openai_cost + gemini_cost + serpapi_cost
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("OpenAI", f"{openai_requests} użyć")
+
+    with col2:
+        st.metric("Gemini", f"{gemini_requests} użyć")
+
+    with col3:
+        st.metric("SerpApi", f"{serpapi_requests} użyć")
+
+    with col4:
+        st.metric("Łączny koszt", f"{total_cost:.2f} zł")
+
+    st.divider()
+
+    st.markdown("### Szacowane koszty")
+
+    st.write(f"🤖 OpenAI: {openai_cost:.2f} zł")
+    st.write(f"🧠 Gemini: {gemini_cost:.2f} zł")
+    st.write(f"🔍 SerpApi: {serpapi_cost:.2f} zł")
+
+    st.divider()
+
+    if st.button("🧹 Wyzeruj liczniki"):
+        st.session_state.openai_requests = 0
+        st.session_state.gemini_requests = 0
+        st.session_state.serpapi_requests = 0
+        st.success("Wyzerowano liczniki.")
