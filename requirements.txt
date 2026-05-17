@@ -2,4 +2,4 @@ streamlit
 pandas
 Pillow
 python-dotenv
-openai
+google-generativeai
