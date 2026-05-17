@@ -39,6 +39,57 @@ DEFAULT_AUCTION_DATA: Dict[str, Any] = {
 }
 
 
+
+# -----------------------------
+# Helpers: simple login
+# -----------------------------
+def check_login() -> bool:
+    """Simple password gate for Streamlit Cloud.
+
+    Add this to Streamlit Secrets:
+
+    APP_USERS = {"michal" = "your_password", "wspolniczka" = "her_password"}
+    """
+    users = st.secrets.get("APP_USERS", {})
+
+    if not users:
+        st.error("Brak skonfigurowanych użytkowników. Dodaj APP_USERS w Streamlit Secrets.")
+        st.stop()
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.title("🔒 Logowanie")
+    st.caption("Dostęp tylko dla uprawnionych użytkowników.")
+
+    with st.form("login_form"):
+        username = st.text_input("Login")
+        password = st.text_input("Hasło", type="password")
+        submitted = st.form_submit_button("Zaloguj")
+
+    if submitted:
+        expected_password = users.get(username)
+        if expected_password and password == expected_password:
+            st.session_state.authenticated = True
+            st.session_state.username = username
+            st.success("Zalogowano poprawnie.")
+            st.rerun()
+        else:
+            st.error("Nieprawidłowy login lub hasło.")
+
+    st.stop()
+
+
+def logout_button() -> None:
+    username = st.session_state.get("username", "")
+    if username:
+        st.sidebar.success(f"Zalogowano jako: {username}")
+    if st.sidebar.button("🚪 Wyloguj"):
+        st.session_state.authenticated = False
+        st.session_state.username = ""
+        st.rerun()
+
+
 def init_state() -> None:
     for key, value in DEFAULT_AUCTION_DATA.items():
         if key not in st.session_state:
@@ -270,7 +321,9 @@ Zasady:
 
 
 st.set_page_config(page_title="AI Sprzedawca Allegro — MVP", layout="wide")
+check_login()
 init_state()
+logout_button()
 
 st.title("AI Sprzedawca Allegro — MVP")
 st.caption("Rozpoznawanie produktów, przygotowanie opisu aukcji i zapisywanie szablonów.")
