@@ -25,6 +25,7 @@ except Exception:
 
 TEMPLATES_FILE = Path("saved_templates.json")
 INVENTORY_FILE = Path("inventory.json")
+USAGE_FILE = Path("ai_usage.json")
 
 DEFAULT_AUCTION_DATA: Dict[str, Any] = {
     "product_name": "",
@@ -187,6 +188,49 @@ def read_json_list(path: Path) -> List[Dict[str, Any]]:
 
 def write_json_list(path: Path, items: List[Dict[str, Any]]) -> None:
     path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+
+# -----------------------------
+# AI usage / cost tracking
+# -----------------------------
+def log_ai_usage(provider: str, action: str, units: int = 1, estimated_cost_pln: float = 0.0, details: str = "") -> None:
+    usage = read_json_list(USAGE_FILE)
+    usage.append(
+        {
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "provider": provider,
+            "action": action,
+            "units": units,
+            "estimated_cost_pln": round(float(estimated_cost_pln), 4),
+            "details": details,
+        }
+    )
+    write_json_list(USAGE_FILE, usage)
+
+
+def load_ai_usage() -> List[Dict[str, Any]]:
+    return read_json_list(USAGE_FILE)
+
+
+def clear_ai_usage() -> None:
+    write_json_list(USAGE_FILE, [])
+
+
+def estimate_openai_description_cost_pln() -> float:
+    return 0.01
+
+
+def estimate_gemini_text_cost_pln() -> float:
+    return 0.005
+
+
+def estimate_gemini_image_cost_pln(image_count: int) -> float:
+    return max(1, image_count) * 0.01
+
+
+def estimate_serpapi_search_cost_pln() -> float:
+    return 0.03
 
 
 # -----------------------------
@@ -517,6 +561,7 @@ def search_google_lens_serpapi(image: Image.Image, query: str = "", country: str
         response = requests.get("https://serpapi.com/search", params=params, timeout=45)
         response.raise_for_status()
         data = response.json()
+        log_ai_usage("SerpApi", "Google Lens / wyszukiwanie zdjęć", units=1, estimated_cost_pln=estimate_serpapi_search_cost_pln(), details=query)
 
         matches = (
             data.get("visual_matches")
@@ -606,6 +651,7 @@ Nie wymyślaj danych. Jeśli czegoś nie widać, napisz: brak pewnych danych.
 """
     try:
         response = model.generate_content([prompt, *images])
+        log_ai_usage("Gemini", "Rozpoznawanie zdjęć", units=len(images), estimated_cost_pln=estimate_gemini_image_cost_pln(len(images)), details=f"Liczba zdjęć: {len(images)}")
         return response.text
     except Exception as exc:
         return f"Nie udało się połączyć z Gemini API. Szczegóły: {exc}"
@@ -648,7 +694,7 @@ def generate_description_openai() -> str:
     client = OpenAI(api_key=api_key)
     try:
         response = client.responses.create(model="gpt-4.1-mini", input=build_listing_prompt())
-        st.session_state.openai_requests = st.session_state.get("openai_requests", 0) + 1
+        log_ai_usage("OpenAI", "Generowanie opisu aukcji", units=1, estimated_cost_pln=estimate_openai_description_cost_pln())
         return response.output_text
     except Exception as exc:
         return f"Nie udało się połączyć z OpenAI API. Szczegóły: {exc}"
@@ -664,6 +710,7 @@ def generate_description_gemini() -> str:
 
     try:
         response = model.generate_content(build_listing_prompt())
+        log_ai_usage("Gemini", "Generowanie opisu aukcji", units=1, estimated_cost_pln=estimate_gemini_text_cost_pln())
         return response.text
     except Exception as exc:
         return f"Nie udało się połączyć z Gemini API. Szczegóły: {exc}"
@@ -702,6 +749,8 @@ tab1, tab_image_search, tab2, tab3, tab_inventory, tab_listed, tab_costs = st.ta
         "💰 Zużycie AI / Koszty",
     ]
 )
+
+
 # -----------------------------
 # TAB 1
 # -----------------------------
@@ -1356,54 +1405,58 @@ with tab3:
                 file_name=f"{selected_name}.json",
                 mime="application/json",
             )
+
+
 # -----------------------------
 # TAB COSTS
 # -----------------------------
 with tab_costs:
     st.subheader("💰 Zużycie AI / Koszty")
+    st.caption("Lokalny licznik użycia AI w tej aplikacji. To są wartości orientacyjne, a nie oficjalny billing dostawców.")
 
-    st.info(
-        "To jest MVP licznika użycia AI. "
-        "Na razie wartości są orientacyjne i będą rozwijane."
-    )
+    usage = load_ai_usage()
 
-    # przykładowe dane
-    openai_requests = st.session_state.get("openai_requests", 0)
-    gemini_requests = st.session_state.get("gemini_requests", 0)
-    serpapi_requests = st.session_state.get("serpapi_requests", 0)
-
-    openai_cost = openai_requests * 0.02
-    gemini_cost = gemini_requests * 0.005
-    serpapi_cost = serpapi_requests * 0.03
-
-    total_cost = openai_cost + gemini_cost + serpapi_cost
+    total_cost = sum(float(row.get("estimated_cost_pln", 0.0) or 0.0) for row in usage)
+    openai_count = sum(1 for row in usage if row.get("provider") == "OpenAI")
+    gemini_count = sum(1 for row in usage if row.get("provider") == "Gemini")
+    serpapi_count = sum(1 for row in usage if row.get("provider") == "SerpApi")
 
     col1, col2, col3, col4 = st.columns(4)
+    col1.metric("OpenAI", f"{openai_count} użyć")
+    col2.metric("Gemini", f"{gemini_count} użyć")
+    col3.metric("SerpApi", f"{serpapi_count} użyć")
+    col4.metric("Szacowany koszt", f"{total_cost:.2f} zł")
 
-    with col1:
-        st.metric("OpenAI", f"{openai_requests} użyć")
+    st.info(
+        "Ten panel zapisuje użycia wykonane z poziomu aplikacji. "
+        "Oficjalne koszty i limity sprawdzaj zawsze w panelach OpenAI, Google/Gemini i SerpApi."
+    )
 
-    with col2:
-        st.metric("Gemini", f"{gemini_requests} użyć")
+    if not usage:
+        st.write("Brak zapisanych użyć AI.")
+    else:
+        st.markdown("### Historia użycia")
 
-    with col3:
-        st.metric("SerpApi", f"{serpapi_requests} użyć")
+        for row in reversed(usage[-100:]):
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([1.2, 1.6, 1])
+                c1.write(f"**{row.get('provider', '')}**")
+                c1.caption(row.get("created_at", ""))
+                c2.write(row.get("action", ""))
+                if row.get("details"):
+                    c2.caption(row.get("details", ""))
+                c3.write(f"{float(row.get('estimated_cost_pln', 0.0) or 0.0):.4f} zł")
+                c3.caption(f"Jednostki: {row.get('units', 1)}")
 
-    with col4:
-        st.metric("Łączny koszt", f"{total_cost:.2f} zł")
+        st.download_button(
+            "⬇️ Pobierz historię użycia AI jako JSON",
+            json.dumps(usage, ensure_ascii=False, indent=2),
+            file_name="zuzycie_ai_koszty.json",
+            mime="application/json",
+        )
 
     st.divider()
-
-    st.markdown("### Szacowane koszty")
-
-    st.write(f"🤖 OpenAI: {openai_cost:.2f} zł")
-    st.write(f"🧠 Gemini: {gemini_cost:.2f} zł")
-    st.write(f"🔍 SerpApi: {serpapi_cost:.2f} zł")
-
-    st.divider()
-
-    if st.button("🧹 Wyzeruj liczniki"):
-        st.session_state.openai_requests = 0
-        st.session_state.gemini_requests = 0
-        st.session_state.serpapi_requests = 0
-        st.success("Wyzerowano liczniki.")
+    if st.button("🧹 Wyzeruj historię użycia AI", use_container_width=True):
+        clear_ai_usage()
+        st.success("Wyczyszczono historię użycia AI.")
+        st.rerun()
