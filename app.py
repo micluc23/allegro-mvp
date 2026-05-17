@@ -20,6 +20,7 @@ except Exception:
 
 
 TEMPLATES_FILE = Path("saved_templates.json")
+INVENTORY_FILE = Path("inventory.json")
 
 DEFAULT_AUCTION_DATA: Dict[str, Any] = {
     "product_name": "",
@@ -38,41 +39,48 @@ DEFAULT_AUCTION_DATA: Dict[str, Any] = {
     "manual_notes": "",
 }
 
+DEFAULT_INVENTORY_ITEM: Dict[str, Any] = {
+    "id": "",
+    "created_at": "",
+    "product_name": "",
+    "brand": "",
+    "category": "",
+    "condition": "Nowy",
+    "size": "",
+    "color": "",
+    "code": "",
+    "quantity": 1,
+    "location": "",
+    "status": "Do wystawienia",
+    "purchase_cost": 0.0,
+    "sale_price": 0.0,
+    "notes": "",
+    "image_urls": "",
+}
 
 
 # -----------------------------
-# Helpers: simple login
+# Login
 # -----------------------------
-def check_login() -> bool:
-    """Simple password gate for Streamlit Cloud.
+def login_screen() -> None:
+    st.set_page_config(page_title="AI Sprzedawca Allegro — logowanie", layout="centered")
+    st.title("🔒 Logowanie")
+    st.caption("Dostęp do aplikacji jest zabezpieczony.")
 
-    Add this to Streamlit Secrets:
+    app_users = st.secrets.get("APP_USERS", {})
 
-    APP_USERS = {"michal" = "your_password", "wspolniczka" = "her_password"}
-    """
-    users = st.secrets.get("APP_USERS", {})
-
-    if not users:
+    if not app_users:
         st.error("Brak skonfigurowanych użytkowników. Dodaj APP_USERS w Streamlit Secrets.")
+        st.code('APP_USERS = { "michal" = "twoje_haslo", "wspolniczka" = "jej_haslo" }', language="toml")
         st.stop()
 
-    if st.session_state.get("authenticated"):
-        return True
+    username = st.text_input("Login")
+    password = st.text_input("Hasło", type="password")
 
-    st.title("🔒 Logowanie")
-    st.caption("Dostęp tylko dla uprawnionych użytkowników.")
-
-    with st.form("login_form"):
-        username = st.text_input("Login")
-        password = st.text_input("Hasło", type="password")
-        submitted = st.form_submit_button("Zaloguj")
-
-    if submitted:
-        expected_password = users.get(username)
-        if expected_password and password == expected_password:
-            st.session_state.authenticated = True
+    if st.button("Zaloguj", use_container_width=True):
+        if username in app_users and app_users[username] == password:
+            st.session_state.logged_in = True
             st.session_state.username = username
-            st.success("Zalogowano poprawnie.")
             st.rerun()
         else:
             st.error("Nieprawidłowy login lub hasło.")
@@ -80,28 +88,31 @@ def check_login() -> bool:
     st.stop()
 
 
-def logout_button() -> None:
-    username = st.session_state.get("username", "")
-    if username:
-        st.sidebar.success(f"Zalogowano jako: {username}")
-    if st.sidebar.button("🚪 Wyloguj"):
-        st.session_state.authenticated = False
-        st.session_state.username = ""
-        st.rerun()
+def require_login() -> None:
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+    if not st.session_state.logged_in:
+        login_screen()
 
 
+# -----------------------------
+# State
+# -----------------------------
 def init_state() -> None:
     for key, value in DEFAULT_AUCTION_DATA.items():
         if key not in st.session_state:
             st.session_state[key] = value
-    if "recognized_text" not in st.session_state:
-        st.session_state.recognized_text = ""
-    if "recognized_search_phrases" not in st.session_state:
-        st.session_state.recognized_search_phrases = ""
-    if "dry_run" not in st.session_state:
-        st.session_state.dry_run = True
-    if "loaded_template_name" not in st.session_state:
-        st.session_state.loaded_template_name = ""
+
+    defaults = {
+        "recognized_text": "",
+        "recognized_search_phrases": "",
+        "dry_run": True,
+        "loaded_template_name": "",
+        "inventory_loaded_item": "",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
 def reset_auction_data() -> None:
@@ -110,6 +121,7 @@ def reset_auction_data() -> None:
     st.session_state.recognized_text = ""
     st.session_state.recognized_search_phrases = ""
     st.session_state.loaded_template_name = ""
+    st.session_state.inventory_loaded_item = ""
 
 
 def reset_description_only() -> None:
@@ -147,24 +159,38 @@ def build_manual_description() -> str:
 def sync_recognition_to_auction() -> None:
     text = st.session_state.get("recognized_text", "")
     phrases = st.session_state.get("recognized_search_phrases", "")
-
     if text:
         st.session_state.manual_notes = text
     if phrases:
         st.session_state.features = phrases
 
 
-def load_templates() -> List[Dict[str, Any]]:
-    if not TEMPLATES_FILE.exists():
+# -----------------------------
+# JSON storage
+# -----------------------------
+def read_json_list(path: Path) -> List[Dict[str, Any]]:
+    if not path.exists():
         return []
     try:
-        return json.loads(TEMPLATES_FILE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
     except Exception:
         return []
 
 
+def write_json_list(path: Path, items: List[Dict[str, Any]]) -> None:
+    path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# -----------------------------
+# Templates
+# -----------------------------
+def load_templates() -> List[Dict[str, Any]]:
+    return read_json_list(TEMPLATES_FILE)
+
+
 def save_templates(templates: List[Dict[str, Any]]) -> None:
-    TEMPLATES_FILE.write_text(json.dumps(templates, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_list(TEMPLATES_FILE, templates)
 
 
 def current_template_payload(name: str) -> Dict[str, Any]:
@@ -205,6 +231,131 @@ def delete_template(name: str) -> None:
     save_templates(templates)
 
 
+# -----------------------------
+# Inventory
+# -----------------------------
+def load_inventory() -> List[Dict[str, Any]]:
+    return read_json_list(INVENTORY_FILE)
+
+
+def save_inventory(items: List[Dict[str, Any]]) -> None:
+    write_json_list(INVENTORY_FILE, items)
+
+
+def next_inventory_id(items: List[Dict[str, Any]]) -> str:
+    today = datetime.now().strftime("%Y%m%d")
+    existing_numbers = []
+    for item in items:
+        item_id = str(item.get("id", ""))
+        if item_id.startswith(f"P-{today}-"):
+            try:
+                existing_numbers.append(int(item_id.split("-")[-1]))
+            except Exception:
+                pass
+    next_no = max(existing_numbers, default=0) + 1
+    return f"P-{today}-{next_no:04d}"
+
+
+def inventory_payload_from_form(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    item_id = st.session_state.get("inv_id") or next_inventory_id(items)
+    return {
+        "id": item_id,
+        "created_at": st.session_state.get("inv_created_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "product_name": st.session_state.get("inv_product_name", ""),
+        "brand": st.session_state.get("inv_brand", ""),
+        "category": st.session_state.get("inv_category", ""),
+        "condition": st.session_state.get("inv_condition", "Nowy"),
+        "size": st.session_state.get("inv_size", ""),
+        "color": st.session_state.get("inv_color", ""),
+        "code": st.session_state.get("inv_code", ""),
+        "quantity": int(st.session_state.get("inv_quantity", 1)),
+        "location": st.session_state.get("inv_location", ""),
+        "status": st.session_state.get("inv_status", "Do wystawienia"),
+        "purchase_cost": float(st.session_state.get("inv_purchase_cost", 0.0)),
+        "sale_price": float(st.session_state.get("inv_sale_price", 0.0)),
+        "notes": st.session_state.get("inv_notes", ""),
+        "image_urls": st.session_state.get("inv_image_urls", ""),
+    }
+
+
+def clear_inventory_form() -> None:
+    fields = {
+        "inv_id": "",
+        "inv_created_at": "",
+        "inv_product_name": "",
+        "inv_brand": "",
+        "inv_category": "",
+        "inv_condition": "Nowy",
+        "inv_size": "",
+        "inv_color": "",
+        "inv_code": "",
+        "inv_quantity": 1,
+        "inv_location": "",
+        "inv_status": "Do wystawienia",
+        "inv_purchase_cost": 0.0,
+        "inv_sale_price": 0.0,
+        "inv_notes": "",
+        "inv_image_urls": "",
+    }
+    for key, value in fields.items():
+        st.session_state[key] = value
+
+
+def load_inventory_item_to_form(item: Dict[str, Any]) -> None:
+    st.session_state.inv_id = item.get("id", "")
+    st.session_state.inv_created_at = item.get("created_at", "")
+    st.session_state.inv_product_name = item.get("product_name", "")
+    st.session_state.inv_brand = item.get("brand", "")
+    st.session_state.inv_category = item.get("category", "")
+    st.session_state.inv_condition = item.get("condition", "Nowy")
+    st.session_state.inv_size = item.get("size", "")
+    st.session_state.inv_color = item.get("color", "")
+    st.session_state.inv_code = item.get("code", "")
+    st.session_state.inv_quantity = int(item.get("quantity", 1) or 1)
+    st.session_state.inv_location = item.get("location", "")
+    st.session_state.inv_status = item.get("status", "Do wystawienia")
+    st.session_state.inv_purchase_cost = float(item.get("purchase_cost", 0.0) or 0.0)
+    st.session_state.inv_sale_price = float(item.get("sale_price", 0.0) or 0.0)
+    st.session_state.inv_notes = item.get("notes", "")
+    st.session_state.inv_image_urls = item.get("image_urls", "")
+
+
+def load_inventory_item_to_auction(item: Dict[str, Any]) -> None:
+    st.session_state.product_name = item.get("product_name", "")
+    st.session_state.brand = item.get("brand", "")
+    st.session_state.category = item.get("category", "")
+    st.session_state.condition = item.get("condition", "Nowy")
+    st.session_state.size = item.get("size", "")
+    st.session_state.color = item.get("color", "")
+    st.session_state.code = item.get("code", "")
+    st.session_state.stock = int(item.get("quantity", 1) or 1)
+    st.session_state.price = float(item.get("sale_price", 0.0) or 0.0)
+    st.session_state.manual_notes = item.get("notes", "")
+    st.session_state.image_urls = item.get("image_urls", "")
+    st.session_state.title = " ".join(
+        [
+            item.get("brand", ""),
+            item.get("product_name", ""),
+            item.get("size", ""),
+            item.get("color", ""),
+        ]
+    ).strip()
+    st.session_state.description = build_manual_description()
+    st.session_state.inventory_loaded_item = item.get("id", "")
+
+
+def update_inventory_status(item_id: str, status: str) -> None:
+    items = load_inventory()
+    for item in items:
+        if item.get("id") == item_id:
+            item["status"] = status
+            item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_inventory(items)
+
+
+# -----------------------------
+# AI
+# -----------------------------
 def get_gemini_model():
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key:
@@ -261,41 +412,6 @@ Nie wymyślaj danych. Jeśli czegoś nie widać, napisz: brak pewnych danych.
         return f"Nie udało się połączyć z Gemini API. Szczegóły: {exc}"
 
 
-def generate_description_openai() -> str:
-    if st.session_state.dry_run:
-        return build_manual_description() + "\n\n<p><em>TRYB TESTOWY — tu pojawiłby się opis wygenerowany przez OpenAI.</em></p>"
-
-    api_key = st.secrets.get("OPENAI_API_KEY", "")
-    if not api_key:
-        return "Brak OPENAI_API_KEY w Streamlit Secrets."
-    if OpenAI is None:
-        return "Brak biblioteki openai. Sprawdź requirements.txt."
-
-    client = OpenAI(api_key=api_key)
-    prompt = build_listing_prompt()
-
-    try:
-        response = client.responses.create(model="gpt-4.1-mini", input=prompt)
-        return response.output_text
-    except Exception as exc:
-        return f"Nie udało się połączyć z OpenAI API. Szczegóły: {exc}"
-
-
-def generate_description_gemini() -> str:
-    if st.session_state.dry_run:
-        return build_manual_description() + "\n\n<p><em>TRYB TESTOWY — tu pojawiłby się opis wygenerowany przez Gemini.</em></p>"
-
-    model, error = get_gemini_model()
-    if error:
-        return f"Nie udało się połączyć z Gemini API. Szczegóły: {error}"
-
-    try:
-        response = model.generate_content(build_listing_prompt())
-        return response.text
-    except Exception as exc:
-        return f"Nie udało się połączyć z Gemini API. Szczegóły: {exc}"
-
-
 def build_listing_prompt() -> str:
     return f"""
 Przygotuj profesjonalny opis aukcji Allegro po polsku.
@@ -320,22 +436,74 @@ Zasady:
 """
 
 
+def generate_description_openai() -> str:
+    if st.session_state.dry_run:
+        return build_manual_description() + "\n\n<p><em>TRYB TESTOWY — tu pojawiłby się opis wygenerowany przez OpenAI.</em></p>"
+
+    api_key = st.secrets.get("OPENAI_API_KEY", "")
+    if not api_key:
+        return "Brak OPENAI_API_KEY w Streamlit Secrets."
+    if OpenAI is None:
+        return "Brak biblioteki openai. Sprawdź requirements.txt."
+
+    client = OpenAI(api_key=api_key)
+    try:
+        response = client.responses.create(model="gpt-4.1-mini", input=build_listing_prompt())
+        return response.output_text
+    except Exception as exc:
+        return f"Nie udało się połączyć z OpenAI API. Szczegóły: {exc}"
+
+
+def generate_description_gemini() -> str:
+    if st.session_state.dry_run:
+        return build_manual_description() + "\n\n<p><em>TRYB TESTOWY — tu pojawiłby się opis wygenerowany przez Gemini.</em></p>"
+
+    model, error = get_gemini_model()
+    if error:
+        return f"Nie udało się połączyć z Gemini API. Szczegóły: {error}"
+
+    try:
+        response = model.generate_content(build_listing_prompt())
+        return response.text
+    except Exception as exc:
+        return f"Nie udało się połączyć z Gemini API. Szczegóły: {exc}"
+
+
+# -----------------------------
+# App
+# -----------------------------
+require_login()
 st.set_page_config(page_title="AI Sprzedawca Allegro — MVP", layout="wide")
-check_login()
 init_state()
-logout_button()
 
 st.title("AI Sprzedawca Allegro — MVP")
-st.caption("Rozpoznawanie produktów, przygotowanie opisu aukcji i zapisywanie szablonów.")
+st.caption("Rozpoznawanie produktów, magazyn, opisy aukcji i szablony.")
 
 with st.sidebar:
     st.header("Ustawienia")
+    st.write(f"Zalogowano jako: **{st.session_state.get('username', '')}**")
+    if st.button("🚪 Wyloguj", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+        st.rerun()
+
+    st.divider()
     st.checkbox("Tryb testowy bez używania API", key="dry_run")
     st.info("W trybie testowym przyciski AI działają 'na sucho' i nie zużywają limitów API.")
 
-tab1, tab2, tab3 = st.tabs(["1️⃣ Rozpoznawanie zdjęć", "2️⃣ Opis i wzór aukcji", "3️⃣ Zapisane szablony"])
+tab1, tab_inventory, tab2, tab3 = st.tabs(
+    [
+        "1️⃣ Rozpoznawanie zdjęć",
+        "📦 Magazyn / Asortyment",
+        "2️⃣ Opis i wzór aukcji",
+        "3️⃣ Zapisane szablony",
+    ]
+)
 
 
+# -----------------------------
+# TAB 1
+# -----------------------------
 with tab1:
     st.subheader("Rozpoznawanie produktu ze zdjęć")
 
@@ -355,7 +523,6 @@ with tab1:
                 st.image(image, caption=file.name, use_container_width=True)
 
     col_a, col_b = st.columns([1, 1])
-
     with col_a:
         if st.button("🔎 Rozpoznaj produkt ze zdjęć", use_container_width=True):
             if not images:
@@ -378,6 +545,173 @@ with tab1:
     )
 
 
+# -----------------------------
+# TAB INVENTORY
+# -----------------------------
+with tab_inventory:
+    st.subheader("Magazyn / Asortyment")
+    st.caption("Prosty rejestr produktów: lokalizacja, status, koszt, cena, marża.")
+
+    inventory = load_inventory()
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    total_items = sum(int(item.get("quantity", 0) or 0) for item in inventory)
+    total_cost = sum(float(item.get("purchase_cost", 0.0) or 0.0) * int(item.get("quantity", 0) or 0) for item in inventory)
+    potential_sales = sum(float(item.get("sale_price", 0.0) or 0.0) * int(item.get("quantity", 0) or 0) for item in inventory)
+    potential_margin = potential_sales - total_cost
+
+    metric_col1.metric("Pozycje", len(inventory))
+    metric_col2.metric("Sztuki", total_items)
+    metric_col3.metric("Koszt zakupu", f"{total_cost:.2f} zł")
+    metric_col4.metric("Potencjalna marża", f"{potential_margin:.2f} zł")
+
+    st.divider()
+
+    with st.expander("➕ Dodaj / edytuj produkt w magazynie", expanded=True):
+        form_col1, form_col2, form_col3 = st.columns(3)
+
+        with form_col1:
+            st.text_input("ID produktu", key="inv_id", placeholder="Automatyczne, jeśli puste")
+            st.text_input("Nazwa produktu", key="inv_product_name")
+            st.text_input("Marka", key="inv_brand")
+            st.text_input("Kategoria", key="inv_category")
+            st.selectbox("Stan", ["Nowy", "Używany", "Po zwrocie", "Powystawowy"], key="inv_condition")
+
+        with form_col2:
+            st.text_input("Rozmiar", key="inv_size")
+            st.text_input("Kolor", key="inv_color")
+            st.text_input("Kod produktu / EAN / SKU", key="inv_code")
+            st.number_input("Ilość", min_value=1, step=1, key="inv_quantity")
+            st.text_input("Lokalizacja", key="inv_location", placeholder="Np. Karton A1 / Worek B3 / Półka C2")
+
+        with form_col3:
+            st.selectbox(
+                "Status",
+                ["Do identyfikacji", "Do wystawienia", "Wystawione", "Sprzedane", "Wysłane", "Zwrot", "Archiwum"],
+                key="inv_status",
+            )
+            st.number_input("Koszt zakupu / szt.", min_value=0.0, step=1.0, key="inv_purchase_cost")
+            st.number_input("Cena sprzedaży / szt.", min_value=0.0, step=1.0, key="inv_sale_price")
+            st.text_area("Linki do zdjęć", key="inv_image_urls", height=80)
+            st.text_area("Notatki", key="inv_notes", height=80)
+
+        btn1, btn2, btn3 = st.columns(3)
+
+        with btn1:
+            if st.button("💾 Zapisz produkt w magazynie", use_container_width=True):
+                payload = inventory_payload_from_form(inventory)
+                inventory = [item for item in inventory if item.get("id") != payload["id"]]
+                inventory.append(payload)
+                save_inventory(inventory)
+                st.success(f"Zapisano produkt: {payload['id']}")
+                st.rerun()
+
+        with btn2:
+            if st.button("🧹 Wyczyść formularz magazynu", use_container_width=True):
+                clear_inventory_form()
+                st.rerun()
+
+        with btn3:
+            if st.button("➡️ Przenieś z formularza do aukcji", use_container_width=True):
+                payload = inventory_payload_from_form(inventory)
+                load_inventory_item_to_auction(payload)
+                st.success("Przeniesiono produkt do zakładki opisu aukcji.")
+
+    st.divider()
+    st.subheader("Lista asortymentu")
+
+    filter_col1, filter_col2, filter_col3 = st.columns(3)
+    with filter_col1:
+        status_filter = st.selectbox(
+            "Filtr statusu",
+            ["Wszystkie", "Do identyfikacji", "Do wystawienia", "Wystawione", "Sprzedane", "Wysłane", "Zwrot", "Archiwum"],
+        )
+    with filter_col2:
+        search_query = st.text_input("Szukaj", placeholder="Marka, nazwa, kod, lokalizacja...")
+    with filter_col3:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Odśwież listę", use_container_width=True):
+            st.rerun()
+
+    filtered = inventory
+    if status_filter != "Wszystkie":
+        filtered = [item for item in filtered if item.get("status") == status_filter]
+    if search_query.strip():
+        q = search_query.lower().strip()
+        filtered = [
+            item for item in filtered
+            if q in " ".join(str(item.get(k, "")) for k in ["id", "product_name", "brand", "category", "size", "color", "code", "location", "status"]).lower()
+        ]
+
+    if not filtered:
+        st.info("Brak produktów dla wybranych filtrów.")
+    else:
+        for item in reversed(filtered):
+            margin = float(item.get("sale_price", 0.0) or 0.0) - float(item.get("purchase_cost", 0.0) or 0.0)
+            with st.container(border=True):
+                header_col1, header_col2, header_col3 = st.columns([2, 1, 1])
+                with header_col1:
+                    st.markdown(f"**{item.get('brand', '')} {item.get('product_name', '')}**")
+                    st.caption(f"ID: {item.get('id')} | Kod: {item.get('code', '')} | Dodano: {item.get('created_at', '')}")
+                with header_col2:
+                    st.write(f"**Status:** {item.get('status', '')}")
+                    st.write(f"**Lokalizacja:** {item.get('location', '')}")
+                with header_col3:
+                    st.write(f"**Cena:** {float(item.get('sale_price', 0.0) or 0.0):.2f} zł")
+                    st.write(f"**Marża/szt.:** {margin:.2f} zł")
+
+                detail_col1, detail_col2, detail_col3, detail_col4 = st.columns(4)
+                detail_col1.write(f"Rozmiar: **{item.get('size', '')}**")
+                detail_col2.write(f"Kolor: **{item.get('color', '')}**")
+                detail_col3.write(f"Ilość: **{item.get('quantity', '')}**")
+                detail_col4.write(f"Koszt/szt.: **{float(item.get('purchase_cost', 0.0) or 0.0):.2f} zł**")
+
+                if item.get("notes"):
+                    st.caption(item.get("notes"))
+
+                action_col1, action_col2, action_col3, action_col4, action_col5 = st.columns(5)
+
+                with action_col1:
+                    if st.button("✏️ Edytuj", key=f"edit_{item.get('id')}", use_container_width=True):
+                        load_inventory_item_to_form(item)
+                        st.success("Wczytano do formularza powyżej.")
+                        st.rerun()
+
+                with action_col2:
+                    if st.button("➡️ Do aukcji", key=f"auction_{item.get('id')}", use_container_width=True):
+                        load_inventory_item_to_auction(item)
+                        st.success("Przeniesiono do zakładki opisu aukcji.")
+                        st.rerun()
+
+                with action_col3:
+                    if st.button("🛒 Wystawione", key=f"listed_{item.get('id')}", use_container_width=True):
+                        update_inventory_status(item.get("id", ""), "Wystawione")
+                        st.rerun()
+
+                with action_col4:
+                    if st.button("✅ Sprzedane", key=f"sold_{item.get('id')}", use_container_width=True):
+                        update_inventory_status(item.get("id", ""), "Sprzedane")
+                        st.rerun()
+
+                with action_col5:
+                    if st.button("🗑️ Usuń", key=f"delete_{item.get('id')}", use_container_width=True):
+                        inventory = [x for x in load_inventory() if x.get("id") != item.get("id")]
+                        save_inventory(inventory)
+                        st.success("Usunięto produkt.")
+                        st.rerun()
+
+    st.download_button(
+        "⬇️ Pobierz magazyn jako JSON",
+        json.dumps(load_inventory(), ensure_ascii=False, indent=2),
+        file_name="magazyn_asortyment.json",
+        mime="application/json",
+    )
+
+
+# -----------------------------
+# TAB 2
+# -----------------------------
 with tab2:
     st.subheader("Dane aukcji")
 
@@ -397,17 +731,15 @@ with tab2:
         if st.button("📝 Wprowadź ręcznie / odśwież wzór", use_container_width=True):
             st.session_state.description = build_manual_description()
             if not st.session_state.title:
-                title_parts = [
-                    st.session_state.brand,
-                    st.session_state.product_name,
-                    st.session_state.size,
-                    st.session_state.color,
-                ]
+                title_parts = [st.session_state.brand, st.session_state.product_name, st.session_state.size, st.session_state.color]
                 st.session_state.title = " ".join([x for x in title_parts if x]).strip()
             st.success("Utworzono ręczny wzór opisu.")
 
     if st.session_state.loaded_template_name:
         st.success(f"Obecnie wczytany szablon: {st.session_state.loaded_template_name}")
+
+    if st.session_state.inventory_loaded_item:
+        st.info(f"Produkt przeniesiony z magazynu: {st.session_state.inventory_loaded_item}")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -467,6 +799,9 @@ with tab2:
     )
 
 
+# -----------------------------
+# TAB 3
+# -----------------------------
 with tab3:
     st.subheader("Zapisane szablony")
 
