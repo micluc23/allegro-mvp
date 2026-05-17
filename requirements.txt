@@ -3,3 +3,4 @@ pandas
 Pillow
 python-dotenv
 google-generativeai
+openai
