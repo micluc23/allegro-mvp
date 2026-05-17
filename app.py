@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import base64
 from datetime import datetime
 from pathlib import Path
+from io import BytesIO
 from typing import Any, Dict, List
 
 import streamlit as st
 import pandas as pd
+import requests
 from PIL import Image
 
 try:
@@ -476,6 +479,79 @@ def import_allegro_csv(uploaded_file, overwrite_existing: bool = True) -> Dict[s
     return {"imported": imported, "updated": updated, "skipped": skipped}
 
 
+
+# -----------------------------
+# AI / internet image search
+# -----------------------------
+def image_to_data_url(image: Image.Image, max_size: int = 1200) -> str:
+    """Prepare image for SerpApi Google Lens as base64 data URL."""
+    img = image.convert("RGB")
+    img.thumbnail((max_size, max_size))
+    buffer = BytesIO()
+    img.save(buffer, format="JPEG", quality=85)
+    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def search_google_lens_serpapi(image: Image.Image, query: str = "", country: str = "pl", limit: int = 12) -> Dict[str, Any]:
+    """Search visually similar products using SerpApi Google Lens."""
+    api_key = st.secrets.get("SERPAPI_API_KEY", "")
+    if not api_key:
+        return {
+            "error": "Brak SERPAPI_API_KEY w Streamlit Secrets. Dodaj klucz SerpApi, żeby włączyć wyszukiwanie zdjęć."
+        }
+
+    params = {
+        "engine": "google_lens",
+        "api_key": api_key,
+        "url": image_to_data_url(image),
+        "country": country,
+        "hl": "pl",
+        "safe": "active",
+    }
+
+    if query.strip():
+        params["q"] = query.strip()
+
+    try:
+        response = requests.get("https://serpapi.com/search", params=params, timeout=45)
+        response.raise_for_status()
+        data = response.json()
+
+        matches = (
+            data.get("visual_matches")
+            or data.get("exact_matches")
+            or data.get("products")
+            or []
+        )
+
+        normalized = []
+        for item in matches[:limit]:
+            normalized.append(
+                {
+                    "title": item.get("title", ""),
+                    "source": item.get("source", ""),
+                    "link": item.get("link", ""),
+                    "thumbnail": item.get("thumbnail", "") or item.get("image", ""),
+                    "price": item.get("price", ""),
+                    "rating": item.get("rating", ""),
+                    "in_stock": item.get("in_stock", ""),
+                }
+            )
+
+        return {"results": normalized, "raw_count": len(matches)}
+    except Exception as exc:
+        return {"error": f"Nie udało się wykonać wyszukiwania Google Lens przez SerpApi: {exc}"}
+
+
+def append_image_link_to_auction(link: str) -> None:
+    current = st.session_state.get("image_urls", "").strip()
+    links = [x.strip() for x in current.replace("\n", ";").split(";") if x.strip()]
+    if link and link not in links:
+        links.append(link)
+    st.session_state.image_urls = "; ".join(links)
+
+
 # -----------------------------
 # AI
 # -----------------------------
@@ -614,11 +690,12 @@ with st.sidebar:
     st.checkbox("Tryb testowy bez używania API", key="dry_run")
     st.info("W trybie testowym przyciski AI działają 'na sucho' i nie zużywają limitów API.")
 
-tab1, tab_inventory, tab_listed, tab2, tab3 = st.tabs(
+tab1, tab_inventory, tab_listed, tab_image_search, tab2, tab3 = st.tabs(
     [
         "1️⃣ Rozpoznawanie zdjęć",
         "📦 Magazyn / Asortyment",
         "🛒 Wystawione aukcje",
+        "🤖 AI wyszukiwanie zdjęć",
         "2️⃣ Opis i wzór aukcji",
         "3️⃣ Zapisane szablony",
     ]
@@ -995,6 +1072,149 @@ with tab_listed:
         file_name="wystawione_aukcje.json",
         mime="application/json",
     )
+
+
+
+# -----------------------------
+# TAB IMAGE SEARCH
+# -----------------------------
+with tab_image_search:
+    st.subheader("AI wyszukiwanie zdjęć / podobnych produktów")
+    st.caption(
+        "Wgraj zdjęcie produktu lub metki. Aplikacja wyszuka podobne produkty w Google Lens przez SerpApi."
+    )
+
+    st.warning(
+        "Uwaga: wyniki z internetu służą głównie do identyfikacji produktu. Przed użyciem zdjęć w aukcji upewnij się, że masz prawo ich używać."
+    )
+
+    if st.session_state.dry_run:
+        st.info("Masz włączony tryb testowy. Wyszukiwanie pokaże przykładowe wyniki i nie użyje SerpApi.")
+
+    search_col1, search_col2 = st.columns([1, 1])
+
+    with search_col1:
+        lens_files = st.file_uploader(
+            "Dodaj zdjęcia do wyszukania",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="lens_files",
+        )
+
+        lens_query = st.text_input(
+            "Dodatkowa fraza zawężająca",
+            placeholder="Np. Triumph biustonosz 75B czarny / kod z metki",
+            key="lens_query",
+        )
+
+        country = st.selectbox(
+            "Rynek wyszukiwania",
+            ["pl", "de", "uk", "us", "fr", "it", "es"],
+            index=0,
+            help="pl = Polska, de = Niemcy, uk = Wielka Brytania itd.",
+        )
+
+        result_limit = st.slider("Liczba wyników", min_value=4, max_value=24, value=12, step=4)
+
+        run_lens = st.button("🔍 Szukaj podobnych produktów/zdjęć", use_container_width=True)
+
+    images_for_search: List[Image.Image] = []
+    if lens_files:
+        preview_cols = st.columns(4)
+        for idx, file in enumerate(lens_files):
+            img = Image.open(file).convert("RGB")
+            images_for_search.append(img)
+            with preview_cols[idx % 4]:
+                st.image(img, caption=file.name, use_container_width=True)
+
+    if run_lens:
+        if not images_for_search:
+            st.warning("Dodaj przynajmniej jedno zdjęcie.")
+        elif st.session_state.dry_run:
+            st.session_state.lens_results = [
+                {
+                    "title": "TRYB TESTOWY — przykładowy podobny produkt",
+                    "source": "example.com",
+                    "link": "https://example.com/produkt",
+                    "thumbnail": "",
+                    "price": "99,99 zł",
+                    "rating": "",
+                    "in_stock": "unknown",
+                },
+                {
+                    "title": "TRYB TESTOWY — przykładowe dopasowanie z Google Lens",
+                    "source": "example-shop.com",
+                    "link": "https://example-shop.com/podobny-produkt",
+                    "thumbnail": "",
+                    "price": "",
+                    "rating": "",
+                    "in_stock": "unknown",
+                },
+            ]
+            st.success("Tryb testowy: wygenerowano przykładowe wyniki.")
+        else:
+            all_results: List[Dict[str, Any]] = []
+            with st.spinner("Szukam podobnych produktów w sieci..."):
+                # Na start używamy pierwszego zdjęcia, bo każde wyszukiwanie to osobny koszt/limit.
+                search_result = search_google_lens_serpapi(
+                    images_for_search[0],
+                    query=lens_query,
+                    country=country,
+                    limit=result_limit,
+                )
+
+            if search_result.get("error"):
+                st.error(search_result["error"])
+            else:
+                all_results = search_result.get("results", [])
+                st.session_state.lens_results = all_results
+                st.success(f"Znaleziono wyników: {len(all_results)}")
+
+    results = st.session_state.get("lens_results", [])
+
+    if results:
+        st.divider()
+        st.subheader("Znalezione dopasowania")
+
+        for idx, item in enumerate(results):
+            with st.container(border=True):
+                cols = st.columns([1, 3, 1])
+
+                with cols[0]:
+                    if item.get("thumbnail"):
+                        st.image(item.get("thumbnail"), use_container_width=True)
+                    else:
+                        st.write("Brak miniatury")
+
+                with cols[1]:
+                    st.markdown(f"**{item.get('title') or 'Brak tytułu'}**")
+                    st.write(f"Źródło: {item.get('source') or 'brak'}")
+                    if item.get("price"):
+                        st.write(f"Cena: {item.get('price')}")
+                    if item.get("link"):
+                        st.link_button("Otwórz wynik", item.get("link"), use_container_width=False)
+
+                with cols[2]:
+                    if st.button("➕ Dodaj link do aukcji", key=f"add_lens_link_{idx}", use_container_width=True):
+                        append_image_link_to_auction(item.get("thumbnail") or item.get("link") or "")
+                        st.success("Dodano link do pola 'Linki do zdjęć' w zakładce opisu.")
+
+                    if st.button("📝 Użyj tytułu", key=f"use_lens_title_{idx}", use_container_width=True):
+                        st.session_state.title = (item.get("title") or "")[:75]
+                        st.success("Przeniesiono tytuł do szkicu aukcji.")
+
+                    if st.button("🧾 Dodaj do notatek", key=f"note_lens_{idx}", use_container_width=True):
+                        note = f"{item.get('title', '')} | {item.get('source', '')} | {item.get('link', '')}"
+                        current = st.session_state.get("manual_notes", "")
+                        st.session_state.manual_notes = (current + "\n" + note).strip()
+                        st.success("Dodano do notatek aukcji.")
+
+        st.download_button(
+            "⬇️ Pobierz wyniki jako JSON",
+            json.dumps(results, ensure_ascii=False, indent=2),
+            file_name="wyniki_wyszukiwania_zdjec.json",
+            mime="application/json",
+        )
 
 
 # -----------------------------
