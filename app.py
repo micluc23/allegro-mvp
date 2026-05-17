@@ -607,7 +607,7 @@ def get_gemini_model():
     if genai is None:
         return None, "Brak biblioteki google-generativeai. Sprawdź requirements.txt."
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-1.5-flash"), ""
+    return genai.GenerativeModel("gemini-2.5-flash"), ""
 
 
 def recognize_with_gemini(images: List[Image.Image]) -> str:
