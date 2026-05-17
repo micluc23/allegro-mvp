@@ -1,0 +1,3 @@
+code,ean,sku,name,brand,category,price,condition,stock,features,image_urls
+5901234123457,5901234123457,ABC-001,"Przykładowy produkt premium 500 ml",DemoBrand,"Dom i ogród",39.99,Nowy,10,"Pojemność: 500 ml; Kolor: czarny; Materiał: tworzywo","https://via.placeholder.com/800x800.png?text=Produkt+1"
+1234567890123,1234567890123,XYZ-002,"Zestaw akcesoriów uniwersalnych",AkcesoriaPro,"Elektronika",59.99,Nowy,5,"Zestaw: 3 elementy; Gwarancja: 24 miesiące","https://via.placeholder.com/800x800.png?text=Produkt+2"
