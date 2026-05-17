@@ -614,10 +614,11 @@ with st.sidebar:
     st.checkbox("Tryb testowy bez używania API", key="dry_run")
     st.info("W trybie testowym przyciski AI działają 'na sucho' i nie zużywają limitów API.")
 
-tab1, tab_inventory, tab2, tab3 = st.tabs(
+tab1, tab_inventory, tab_listed, tab2, tab3 = st.tabs(
     [
         "1️⃣ Rozpoznawanie zdjęć",
         "📦 Magazyn / Asortyment",
+        "🛒 Wystawione aukcje",
         "2️⃣ Opis i wzór aukcji",
         "3️⃣ Zapisane szablony",
     ]
@@ -863,6 +864,135 @@ with tab_inventory:
         "⬇️ Pobierz magazyn jako JSON",
         json.dumps(load_inventory(), ensure_ascii=False, indent=2),
         file_name="magazyn_asortyment.json",
+        mime="application/json",
+    )
+
+
+# -----------------------------
+# TAB LISTED AUCTIONS
+# -----------------------------
+with tab_listed:
+    st.subheader("Wystawione aukcje")
+    st.caption("Panel kontroli ofert: wystawione, sprzedane, wysłane i do ponownego wystawienia.")
+
+    inventory = load_inventory()
+    auction_items = [
+        item for item in inventory
+        if item.get("status") in ["Wystawione", "Sprzedane", "Wysłane", "Zwrot"] or item.get("allegro_url") or item.get("offer_id")
+    ]
+
+    listed_count = sum(1 for item in auction_items if item.get("status") == "Wystawione")
+    sold_count = sum(1 for item in auction_items if item.get("status") == "Sprzedane")
+    shipped_count = sum(1 for item in auction_items if item.get("status") == "Wysłane")
+    listed_value = sum(float(item.get("sale_price", 0.0) or 0.0) * int(item.get("quantity", 0) or 0) for item in auction_items if item.get("status") == "Wystawione")
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    metric_col1.metric("Wystawione", listed_count)
+    metric_col2.metric("Sprzedane", sold_count)
+    metric_col3.metric("Wysłane", shipped_count)
+    metric_col4.metric("Wartość wystawionych", f"{listed_value:.2f} zł")
+
+    st.divider()
+
+    filter_col1, filter_col2, filter_col3 = st.columns(3)
+    with filter_col1:
+        auction_status_filter = st.selectbox(
+            "Status aukcji",
+            ["Wszystkie", "Wystawione", "Sprzedane", "Wysłane", "Zwrot"],
+            key="auction_status_filter",
+        )
+    with filter_col2:
+        auction_search = st.text_input(
+            "Szukaj aukcji",
+            placeholder="Nazwa, marka, kod, offer_id...",
+            key="auction_search",
+        )
+    with filter_col3:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Odśwież aukcje", use_container_width=True):
+            st.rerun()
+
+    filtered_auctions = auction_items
+    if auction_status_filter != "Wszystkie":
+        filtered_auctions = [item for item in filtered_auctions if item.get("status") == auction_status_filter]
+    if auction_search.strip():
+        q = auction_search.lower().strip()
+        filtered_auctions = [
+            item for item in filtered_auctions
+            if q in " ".join(str(item.get(k, "")) for k in ["id", "product_name", "brand", "category", "size", "color", "code", "offer_id", "allegro_url", "status"]).lower()
+        ]
+
+    if not filtered_auctions:
+        st.info("Brak aukcji dla wybranych filtrów.")
+    else:
+        for item in reversed(filtered_auctions):
+            item_id = item.get("id", "")
+            sale_price = float(item.get("sale_price", 0.0) or 0.0)
+            purchase_cost = float(item.get("purchase_cost", 0.0) or 0.0)
+            quantity = int(item.get("quantity", 0) or 0)
+            margin_total = (sale_price - purchase_cost) * quantity
+
+            with st.container(border=True):
+                header_col1, header_col2, header_col3 = st.columns([2, 1, 1])
+
+                with header_col1:
+                    st.markdown(f"**{item.get('brand', '')} {item.get('product_name', '')}**")
+                    st.caption(f"ID: {item_id} | Allegro offer_id: {item.get('offer_id', 'brak')} | Kod: {item.get('code', '')}")
+                    if item.get("allegro_url"):
+                        st.markdown(f"[🔗 Otwórz ofertę Allegro]({item.get('allegro_url')})")
+
+                with header_col2:
+                    st.write(f"**Status:** {item.get('status', '')}")
+                    st.write(f"**Ilość:** {quantity}")
+                    st.write(f"**Lokalizacja:** {item.get('location', '')}")
+
+                with header_col3:
+                    st.write(f"**Cena:** {sale_price:.2f} zł")
+                    st.write(f"**Marża razem:** {margin_total:.2f} zł")
+
+                detail_col1, detail_col2, detail_col3, detail_col4 = st.columns(4)
+                detail_col1.write(f"Rozmiar: **{item.get('size', '')}**")
+                detail_col2.write(f"Kolor: **{item.get('color', '')}**")
+                detail_col3.write(f"Stan: **{item.get('condition', '')}**")
+                detail_col4.write(f"Kategoria: **{item.get('category', '')}**")
+
+                if item.get("notes"):
+                    st.caption(item.get("notes"))
+
+                action_col1, action_col2, action_col3, action_col4, action_col5 = st.columns(5)
+
+                with action_col1:
+                    if st.button("✅ Sprzedane", key=f"listed_sold_{item_id}", use_container_width=True):
+                        update_inventory_status(item_id, "Sprzedane")
+                        st.rerun()
+
+                with action_col2:
+                    if st.button("📦 Wysłane", key=f"listed_shipped_{item_id}", use_container_width=True):
+                        update_inventory_status(item_id, "Wysłane")
+                        st.rerun()
+
+                with action_col3:
+                    if st.button("♻️ Wystawione", key=f"listed_back_{item_id}", use_container_width=True):
+                        update_inventory_status(item_id, "Wystawione")
+                        st.rerun()
+
+                with action_col4:
+                    if st.button("✏️ Edytuj w magazynie", key=f"listed_edit_{item_id}", use_container_width=True):
+                        load_inventory_item_to_form(item)
+                        st.success("Wczytano aukcję do formularza magazynu. Przejdź do zakładki Magazyn / Asortyment.")
+                        st.rerun()
+
+                with action_col5:
+                    if st.button("➡️ Do opisu", key=f"listed_to_desc_{item_id}", use_container_width=True):
+                        load_inventory_item_to_auction(item)
+                        st.success("Przeniesiono aukcję do zakładki opisu aukcji.")
+                        st.rerun()
+
+    st.download_button(
+        "⬇️ Pobierz wystawione aukcje jako JSON",
+        json.dumps(auction_items, ensure_ascii=False, indent=2),
+        file_name="wystawione_aukcje.json",
         mime="application/json",
     )
 
