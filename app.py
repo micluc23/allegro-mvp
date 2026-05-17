@@ -527,22 +527,16 @@ def import_allegro_csv(uploaded_file, overwrite_existing: bool = True) -> Dict[s
 # -----------------------------
 # AI / internet image search
 # -----------------------------
-from PIL import Image
-from io import BytesIO
-import base64
-
-def image_to_base64(uploaded_file):
-    image = Image.open(uploaded_file)
-
-    # zmniejszenie zdjęcia
-    max_size = (800, 800)
-    image.thumbnail(max_size)
+def image_to_data_url(image: Image.Image, max_size: int = 600) -> str:
+    """Compress image and prepare it for SerpApi Google Lens as a shorter data URL."""
+    img = image.convert("RGB")
+    img.thumbnail((max_size, max_size))
 
     buffer = BytesIO()
-    image.save(buffer, format="JPEG", quality=70)
+    img.save(buffer, format="JPEG", quality=45, optimize=True)
 
-    return base64.b64encode(buffer.getvalue()).decode()
-
+    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return f"data:image/jpeg;base64,{encoded}"
 
 def search_google_lens_serpapi(image: Image.Image, query: str = "", country: str = "pl", limit: int = 12) -> Dict[str, Any]:
     """Search visually similar products using SerpApi Google Lens."""
@@ -566,6 +560,12 @@ def search_google_lens_serpapi(image: Image.Image, query: str = "", country: str
 
     try:
         response = requests.get("https://serpapi.com/search", params=params, timeout=45)
+
+        if response.status_code == 414:
+            return {
+                "error": "Zdjęcie nadal jest za duże dla SerpApi. Zrób bliższe zdjęcie samego produktu/metki albo użyj mniejszego pliku."
+            }
+
         response.raise_for_status()
         data = response.json()
         log_ai_usage("SerpApi", "Google Lens / wyszukiwanie zdjęć", units=1, estimated_cost_pln=estimate_serpapi_search_cost_pln(), details=query)
@@ -614,7 +614,7 @@ def get_gemini_model():
     if genai is None:
         return None, "Brak biblioteki google-generativeai. Sprawdź requirements.txt."
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-2.5-flash"), ""
+    return genai.GenerativeModel("gemini-2.0-flash"), ""
 
 
 def recognize_with_gemini(images: List[Image.Image]) -> str:
