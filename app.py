@@ -10,7 +10,9 @@ from typing import Any, Dict, List
 import streamlit as st
 import pandas as pd
 import requests
+import gspread
 from PIL import Image
+from google.oauth2.service_account import Credentials
 
 try:
     import google.generativeai as genai
@@ -26,6 +28,12 @@ except Exception:
 TEMPLATES_FILE = Path("saved_templates.json")
 INVENTORY_FILE = Path("inventory.json")
 USAGE_FILE = Path("ai_usage.json")
+
+SHEETS_MAP = {
+    "inventory.json": "inventory",
+    "saved_templates.json": "templates",
+    "ai_usage.json": "ai_usage",
+}
 
 DEFAULT_AUCTION_DATA: Dict[str, Any] = {
     "product_name": "",
@@ -174,9 +182,57 @@ def sync_recognition_to_auction() -> None:
 
 
 # -----------------------------
-# JSON storage
+# Persistent storage: Google Sheets with local JSON fallback
 # -----------------------------
-def read_json_list(path: Path) -> List[Dict[str, Any]]:
+def get_sheets_client():
+    try:
+        service_info = dict(st.secrets.get("gcp_service_account", {}))
+        if not service_info:
+            return None
+
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        credentials = Credentials.from_service_account_info(service_info, scopes=scopes)
+        return gspread.authorize(credentials)
+    except Exception as exc:
+        st.session_state["sheets_last_error"] = str(exc)
+        return None
+
+
+def get_spreadsheet():
+    client = get_sheets_client()
+    if client is None:
+        return None
+
+    sheet_name = st.secrets.get("GOOGLE_SHEETS_NAME", "")
+    if not sheet_name:
+        st.session_state["sheets_last_error"] = "Brak GOOGLE_SHEETS_NAME w Streamlit Secrets."
+        return None
+
+    try:
+        return client.open(sheet_name)
+    except Exception as exc:
+        st.session_state["sheets_last_error"] = str(exc)
+        return None
+
+
+def get_or_create_worksheet(spreadsheet, worksheet_name: str):
+    try:
+        ws = spreadsheet.worksheet(worksheet_name)
+    except Exception:
+        ws = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=3)
+        ws.update("A1:C1", [["id", "created_at", "json"]])
+        return ws
+
+    values = ws.get_all_values()
+    if not values:
+        ws.update("A1:C1", [["id", "created_at", "json"]])
+    return ws
+
+
+def read_json_list_local(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     try:
@@ -186,9 +242,73 @@ def read_json_list(path: Path) -> List[Dict[str, Any]]:
         return []
 
 
-def write_json_list(path: Path, items: List[Dict[str, Any]]) -> None:
+def write_json_list_local(path: Path, items: List[Dict[str, Any]]) -> None:
     path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
+
+def read_json_list(path: Path) -> List[Dict[str, Any]]:
+    worksheet_name = SHEETS_MAP.get(path.name)
+    if not worksheet_name:
+        return read_json_list_local(path)
+
+    spreadsheet = get_spreadsheet()
+    if spreadsheet is None:
+        return read_json_list_local(path)
+
+    try:
+        ws = get_or_create_worksheet(spreadsheet, worksheet_name)
+        records = ws.get_all_records()
+        items: List[Dict[str, Any]] = []
+
+        for row in records:
+            raw_json = row.get("json", "")
+            if raw_json:
+                try:
+                    items.append(json.loads(raw_json))
+                except Exception:
+                    pass
+
+        return items
+    except Exception as exc:
+        st.session_state["sheets_last_error"] = str(exc)
+        return read_json_list_local(path)
+
+
+def write_json_list(path: Path, items: List[Dict[str, Any]]) -> None:
+    write_json_list_local(path, items)
+
+    worksheet_name = SHEETS_MAP.get(path.name)
+    if not worksheet_name:
+        return
+
+    spreadsheet = get_spreadsheet()
+    if spreadsheet is None:
+        return
+
+    try:
+        ws = get_or_create_worksheet(spreadsheet, worksheet_name)
+
+        rows = [["id", "created_at", "json"]]
+        for idx, item in enumerate(items, start=1):
+            item_id = item.get("id") or item.get("name") or item.get("created_at") or f"row-{idx}"
+            created_at = item.get("created_at", "")
+            rows.append([str(item_id), str(created_at), json.dumps(item, ensure_ascii=False)])
+
+        ws.clear()
+        ws.update(rows)
+    except Exception as exc:
+        st.session_state["sheets_last_error"] = str(exc)
+
+
+def sheets_status_box() -> None:
+    spreadsheet = get_spreadsheet()
+    if spreadsheet is None:
+        st.warning("Google Sheets nie jest aktualnie połączone. Dane mogą nie zostać zapisane po restarcie.")
+        if st.session_state.get("sheets_last_error"):
+            with st.expander("Szczegóły błędu Google Sheets"):
+                st.code(st.session_state.get("sheets_last_error"))
+    else:
+        st.success("Google Sheets połączone — dane zapisują się na stałe.")
 
 
 # -----------------------------
@@ -1461,6 +1581,11 @@ with tab_costs:
             file_name="zuzycie_ai_koszty.json",
             mime="application/json",
         )
+
+    st.divider()
+    st.markdown("### Google Sheets")
+    st.write("Dane aplikacji są zapisywane w arkuszu Google w zakładkach: `inventory`, `templates`, `ai_usage`.")
+    sheets_status_box()
 
     st.divider()
     if st.button("🧹 Wyzeruj historię użycia AI", use_container_width=True):
